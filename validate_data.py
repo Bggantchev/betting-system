@@ -49,6 +49,11 @@ GENERAL_BAND = (1.005, 1.15)    # any bookmaker
 # files routinely have only 8-12 matches).
 MIN_ROWS_FOR_PROFILE = 30
 
+# Soft bookmakers charge more on smaller leagues: Bet365 runs ~5.5% on the
+# Premier League but 7.5-10% on the Belgian Pro League or Primeira Liga. A 9%
+# ceiling calibrated on major leagues produced false alarms on smaller ones.
+SOFT_BOOK_MAX_MARGIN = 12.0
+
 # Odds column triplets commonly present in this project's files.
 # Each entry: (home, draw, away, label, plausibility band, expected margin range)
 #
@@ -62,11 +67,11 @@ KNOWN_TRIPLETS = [
     ('PSCH', 'PSCD', 'PSCA', 'Pinnacle closing', SHARP_BAND, (1.5, 4.5)),
     ('PSH',  'PSD',  'PSA',  'Pinnacle opening', SHARP_BAND, (1.5, 5.0)),
     ('MaxCH', 'MaxCD', 'MaxCA', 'Market max closing', (0.95, 1.10), (0.0, 4.5)),
-    ('AvgCH', 'AvgCD', 'AvgCA', 'Market avg closing', GENERAL_BAND, (3.0, 9.0)),
-    ('B365H', 'B365D', 'B365A', 'Bet365', GENERAL_BAND, (3.0, 9.0)),
+    ('AvgCH', 'AvgCD', 'AvgCA', 'Market avg closing', GENERAL_BAND, (3.0, SOFT_BOOK_MAX_MARGIN)),
+    ('B365H', 'B365D', 'B365A', 'Bet365', GENERAL_BAND, (3.0, SOFT_BOOK_MAX_MARGIN)),
     ('odds_ft_home_team_win', 'odds_ft_draw', 'odds_ft_away_team_win',
-     'FootyStats CSV', GENERAL_BAND, (3.0, 9.0)),
-    ('odds_ft_1', 'odds_ft_x', 'odds_ft_2', 'FootyStats API', GENERAL_BAND, (3.0, 9.0)),
+     'FootyStats CSV', GENERAL_BAND, (3.0, SOFT_BOOK_MAX_MARGIN)),
+    ('odds_ft_1', 'odds_ft_x', 'odds_ft_2', 'FootyStats API', GENERAL_BAND, (3.0, SOFT_BOOK_MAX_MARGIN)),
 ]
 
 
@@ -111,11 +116,18 @@ def check_triplet(df, h, d, a, label, band, margin_range=None):
     # to be? Plausible-but-wrong-book is invisible to the band check.
     wrong_book = False
     if margin_range and mean_clean is not None:
-        margin_pct = (mean_clean - 1) * 100
-        lo_m, hi_m = margin_range
-        if not (lo_m <= margin_pct <= hi_m):
-            wrong_book = True
-            verdict = 'WRONG BOOK?'
+        if n < MIN_ROWS_FOR_PROFILE:
+            # Too few matches for the mean margin to mean anything. Early-season
+            # files routinely hold 8-12 matches, where the estimate swings
+            # wildly; flagging on that produces false alarms and trains you to
+            # ignore the warning, which defeats the point.
+            verdict = f'{verdict} (n<{MIN_ROWS_FOR_PROFILE}, profile skipped)'
+        else:
+            margin_pct = (mean_clean - 1) * 100
+            lo_m, hi_m = margin_range
+            if not (lo_m <= margin_pct <= hi_m):
+                wrong_book = True
+                verdict = 'WRONG BOOK?'
 
     return {'label': label, 'cols': (h, d, a), 'n': n, 'bad': bad,
             'pct_bad': pct, 'mean_clean': mean_clean, 'verdict': verdict,
