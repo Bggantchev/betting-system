@@ -43,6 +43,12 @@ import pandas as pd
 SHARP_BAND = (1.005, 1.06)      # Pinnacle-style
 GENERAL_BAND = (1.005, 1.15)    # any bookmaker
 
+# The book-profile check compares a column's mean margin against what that
+# bookmaker should charge. Below this many rows the mean is too noisy to judge,
+# so the check is skipped rather than producing false alarms (early-season
+# files routinely have only 8-12 matches).
+MIN_ROWS_FOR_PROFILE = 30
+
 # Odds column triplets commonly present in this project's files.
 # Each entry: (home, draw, away, label, plausibility band, expected margin range)
 #
@@ -218,8 +224,11 @@ def main():
         results = audit_frame(df, f)
         print_report(f"{os.path.basename(f)}  ({len(df)} rows)", results)
         for r in results:
-            if rank.get(r['verdict'], 0) > rank.get(worst, 0):
-                worst = r['verdict']
+            v = r['verdict']
+            if 'profile check skipped' in v:
+                v = v.split(' (')[0]      # judge on the plausibility result only
+            if rank.get(v, 0) > rank.get(worst, 0):
+                worst = v
 
     print("\n" + "=" * 78)
     print(f"WORST VERDICT ACROSS ALL FILES: {worst}")
@@ -237,3 +246,5 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
