@@ -141,10 +141,39 @@ with col2:
     away_options = [t for t in team_list if t != home_team]
     away_team = st.selectbox("Away team", away_options)
 
+# --- Scoring, persisted in session state -----------------------------------
+#
+# Streamlit re-runs the whole script on every interaction, and st.button()
+# returns True only on the run immediately following its click. If the results
+# (and the bet-logging form) lived inside `if st.button(...)`, then submitting
+# the form would trigger a re-run in which the button reads False — so the
+# entire block, form handler included, would silently disappear. That is
+# exactly the bug this structure avoids: the click stores its result in
+# st.session_state, and rendering is driven by that stored state instead.
+
 if st.button("Score this fixture", type="primary"):
     stats = compute_team_stats(df)
-    result = score_fixture(home_team, away_team, stats, cfg['total_games'])
-    flags = check_outlier_flags(league, home_team, away_team)
+    st.session_state['scored'] = {
+        'league': league,
+        'home_team': home_team,
+        'away_team': away_team,
+        'result': score_fixture(home_team, away_team, stats, cfg['total_games']),
+        'flags': check_outlier_flags(league, home_team, away_team),
+    }
+
+scored = st.session_state.get('scored')
+
+# Discard a stale result if the user has since changed the selection, so the
+# logging form can never be attached to a fixture other than the one shown.
+if scored and (scored['league'] != league
+               or scored['home_team'] != home_team
+               or scored['away_team'] != away_team):
+    scored = None
+    st.session_state.pop('scored', None)
+
+if scored:
+    result = scored['result']
+    flags = scored['flags']
 
     st.divider()
     st.subheader(f"{home_team} vs {away_team}")
