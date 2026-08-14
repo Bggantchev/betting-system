@@ -1,0 +1,131 @@
+name: Refresh league data
+
+# Runs automatically every day, early morning UTC. Checking daily (rather
+# than guessing an exact twice-weekly cadence) means results from any
+# matchday — weekend or midweek — get picked up within at most ~24 hours,
+# regardless of exactly when football-data.co.uk itself updates. A daily
+# check costs nothing if there's no new data (the fetch just re-downloads
+# the same file and no commit happens — see the "if nothing changed" step
+# below). Also runnable manually any time from the GitHub Actions tab.
+on:
+  schedule:
+    - cron: '0 7 * * *'   # every day, 07:00 UTC (after last-night's matches)
+  workflow_dispatch: {}     # lets you trigger it manually on demand
+
+permissions:
+  contents: write   # needed so the workflow can commit refreshed CSVs back to the repo
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Compute current season code
+        id: season
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          from datetime import datetime, timezone
+          now = datetime.now(timezone.utc)
+          season_start = now.year if now.month >= 8 else now.year - 1
+          code = f"{str(season_start)[-2:]}{str(season_start+1)[-2:]}"
+          print(f"code={code}")
+          EOF
+
+      - name: Download latest league CSVs
+        run: |
+          SEASON="${{ steps.season.outputs.code }}"
+          echo "Using season code: $SEASON"
+          mkdir -p data
+          declare -A LEAGUES=(
+            [E0]=E0_raw.csv
+            [SP1]=SP1_raw.csv
+            [I1]=I1_raw.csv
+            [D1]=D1_raw.csv
+            [F1]=F1_raw.csv
+            [N1]=N1_raw.csv
+            [P1]=P1_raw.csv
+            [B1]=B1_raw.csv
+          )
+          mkdir -p /tmp/fsdl
+          for CODE in "${!LEAGUES[@]}"; do
+            FILE="${LEAGUES[$CODE]}"
+            URL="https://www.football-data.co.uk/mmz4281/${SEASON}/${CODE}.csv"
+            TMP="/tmp/fsdl/${CODE}.csv"
+            echo "Fetching $URL"
+
+            # Download to a temp file first. `curl -o` truncates its target
+            # immediately, so writing straight to data/$FILE would destroy the
+            # existing good file the moment a request failed — the opposite of
+            # the "keeping previous file" behaviour intended here.
+            if curl -sL --fail "$URL" -o "$TMP"; then
+              LINES=$(wc -l < "$TMP")
+              # A valid file has a header plus at least one match, and the
+              # header must contain the columns we rely on.
+              if [ "$LINES" -ge 2 ] && head -1 "$TMP" | grep -q "HomeTeam"; then
+
+                # Identity check. football-data CSVs carry a `Div` column naming
+                # the league. On 2026-08-14 the site served La Liga content at
+                # the P1.csv path — byte-identical to SP1.csv. Without this
+                # check that silently becomes "Primeira Liga" data and corrupts
+                # every downstream analysis of that league.
+                ACTUAL_DIV=$(awk -F, 'NR==2 {gsub(/"/,"",$1); print $1}' "$TMP")
+                if [ -n "$ACTUAL_DIV" ] && [ "$ACTUAL_DIV" != "$CODE" ]; then
+                  echo "  REJECTED: $CODE — file contains Div='$ACTUAL_DIV', not '$CODE'."
+                  echo "            The source served the wrong league. Keeping existing data/$FILE."
+                  continue
+                fi
+
+                mv "$TMP" "data/$FILE"
+                echo "  OK: $CODE -> data/$FILE ($((LINES-1)) matches, Div=$ACTUAL_DIV)"
+              else
+                echo "  WARNING: $CODE returned $LINES line(s) or an unexpected header."
+                echo "           Keeping the existing data/$FILE unchanged."
+                head -1 "$TMP" | cut -c1-120
+              fi
+            else
+              echo "  WARNING: download failed for $CODE. Keeping existing data/$FILE."
+            fi
+          done
+
+          echo ""
+          echo "Post-download check — size, checksum and league identity:"
+          for CODE in "${!LEAGUES[@]}"; do
+            FILE="${LEAGUES[$CODE]}"
+            if [ -f "data/$FILE" ]; then
+              DIV=$(awk -F, 'NR==2 {gsub(/"/,"",$1); print $1}' "data/$FILE")
+              echo "  $FILE: $(wc -l < "data/$FILE") lines, md5 $(md5sum "data/$FILE" | cut -c1-8), Div=$DIV"
+            fi
+          done
+
+          echo ""
+          DUPES=$(md5sum data/*.csv 2>/dev/null | awk '{print $1}' | sort | uniq -d)
+          if [ -n "$DUPES" ]; then
+            echo "WARNING: identical files detected — two leagues hold the same data:"
+            for H in $DUPES; do
+              md5sum data/*.csv | grep "^$H" | awk '{print "  " $2}'
+            done
+            echo "  This means the source served the same content for different league codes."
+          else
+            echo "No duplicate files — every league holds distinct data."
+          fi
+
+      - name: Validate downloaded data (Section 23.4)
+        run: |
+          python3 -m pip install --quiet pandas
+          echo "Auditing freshly downloaded files for implausible odds..."
+          python3 validate_data.py || true
+        continue-on-error: true
+
+      - name: Commit refreshed data if anything changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/*.csv
+          if git diff --cached --quiet; then
+            echo "No changes — data already current."
+          else
+            git commit -m "Automated data refresh $(date -u +%Y-%m-%d)"
+            git push
+          fi
