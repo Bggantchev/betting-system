@@ -1,0 +1,10 @@
+service_account.json
+streamlit_secrets.txt
+footystats_key.txt
+bet_log.csv
+outputs/
+.fs_cache/
+__pycache__/
+*.pyc
+.DS_Store
+footystats_mcp/
