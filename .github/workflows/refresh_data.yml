@@ -48,11 +48,41 @@ jobs:
             [P1]=P1_raw.csv
             [B1]=B1_raw.csv
           )
+          mkdir -p /tmp/fsdl
           for CODE in "${!LEAGUES[@]}"; do
             FILE="${LEAGUES[$CODE]}"
             URL="https://www.football-data.co.uk/mmz4281/${SEASON}/${CODE}.csv"
-            echo "Fetching $URL -> data/$FILE"
-            curl -sL --fail "$URL" -o "data/$FILE" || echo "WARNING: failed to fetch $CODE, keeping previous file"
+            TMP="/tmp/fsdl/${CODE}.csv"
+            echo "Fetching $URL"
+
+            # Download to a temp file first. `curl -o` truncates its target
+            # immediately, so writing straight to data/$FILE would destroy the
+            # existing good file the moment a request failed — the opposite of
+            # the "keeping previous file" behaviour intended here.
+            if curl -sL --fail "$URL" -o "$TMP"; then
+              LINES=$(wc -l < "$TMP")
+              # A valid file has a header plus at least one match, and the
+              # header must contain the columns we rely on.
+              if [ "$LINES" -ge 2 ] && head -1 "$TMP" | grep -q "HomeTeam"; then
+                mv "$TMP" "data/$FILE"
+                echo "  OK: $CODE -> data/$FILE ($((LINES-1)) matches)"
+              else
+                echo "  WARNING: $CODE returned $LINES line(s) or an unexpected header."
+                echo "           Keeping the existing data/$FILE unchanged."
+                head -1 "$TMP" | cut -c1-120
+              fi
+            else
+              echo "  WARNING: download failed for $CODE. Keeping existing data/$FILE."
+            fi
+          done
+
+          echo ""
+          echo "Post-download check — file sizes and first data row per league:"
+          for CODE in "${!LEAGUES[@]}"; do
+            FILE="${LEAGUES[$CODE]}"
+            if [ -f "data/$FILE" ]; then
+              echo "  $FILE: $(wc -l < "data/$FILE") lines, md5 $(md5sum "data/$FILE" | cut -c1-8)"
+            fi
           done
 
       - name: Validate downloaded data (Section 23.4)
