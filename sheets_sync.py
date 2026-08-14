@@ -42,7 +42,11 @@ def _get_credentials_dict(streamlit_secrets=None):
     if streamlit_secrets is not None:
         try:
             return dict(streamlit_secrets["gcp_service_account"])
-        except (KeyError, TypeError):
+        except Exception:
+            # Deliberately broad. Streamlit raises StreamlitSecretNotFoundError
+            # when no secrets.toml exists, which is neither KeyError nor
+            # TypeError — catching only those let it escape and crash the app
+            # with no visible message, which is far worse than falling back.
             pass
 
     local_path = 'service_account.json'
@@ -58,9 +62,10 @@ def _get_sheet_id(streamlit_secrets=None):
     if streamlit_secrets is not None:
         try:
             return streamlit_secrets["sheet_id"]
-        except (KeyError, TypeError):
+        except Exception:
+            # Same reasoning as above.
             pass
-    return "1d6qNWbzLulhJbeNirKnCxy_urbuq7Aaps66tkckTubo"  # or set directly below if simpler for you
+    return os.environ.get('BETTING_SHEET_ID')  # or set directly below if simpler for you
     # If you'd rather not use an environment variable locally, you can also
     # just hardcode your sheet ID as a fallback here, e.g.:
     # return "1AbCdEfGhIjKlMnOpQrStUvWxYz1234567890"
