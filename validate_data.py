@@ -123,6 +123,36 @@ def check_triplet(df, h, d, a, label, band, margin_range=None):
             'min': float(ov[present].min()), 'max': float(ov[present].max())}
 
 
+# Maps our filenames to the league code the file's `Div` column must contain.
+EXPECTED_DIV = {
+    'E0_raw.csv': 'E0', 'SP1_raw.csv': 'SP1', 'I1_raw.csv': 'I1',
+    'D1_raw.csv': 'D1', 'F1_raw.csv': 'F1', 'N1_raw.csv': 'N1',
+    'P1_raw.csv': 'P1', 'B1_raw.csv': 'B1',
+}
+
+
+def check_league_identity(df, filename):
+    """
+    Confirms the file actually contains the league its name claims.
+
+    football-data.co.uk has been observed serving the wrong league at a given
+    URL early in a season (E0.csv returning Championship data, SP1.csv
+    returning Primeira Liga). Such a file is perfectly valid CSV with plausible
+    odds — nothing else in this module would catch it.
+    """
+    base = os.path.basename(filename)
+    expected = EXPECTED_DIV.get(base)
+    if not expected or 'Div' not in df.columns:
+        return None
+    found = df['Div'].dropna().unique().tolist()
+    if not found:
+        return {'expected': expected, 'found': [], 'ok': False,
+                'note': 'Div column present but empty'}
+    ok = len(found) == 1 and str(found[0]).strip() == expected
+    return {'expected': expected, 'found': found, 'ok': ok,
+            'note': '' if ok else f"contains {found}, expected '{expected}'"}
+
+
 def audit_frame(df, name='dataframe'):
     """Checks every known odds triplet present. Returns list of result dicts."""
     results = []
@@ -223,6 +253,14 @@ def main():
             continue
         results = audit_frame(df, f)
         print_report(f"{os.path.basename(f)}  ({len(df)} rows)", results)
+
+        ident = check_league_identity(df, f)
+        if ident and not ident['ok']:
+            print(f"  *** WRONG LEAGUE: {ident['note']}")
+            print(f"      This file does not contain the league its name claims.")
+            worst = 'UNUSABLE'
+        elif ident:
+            print(f"  league identity: OK (Div={ident['expected']})")
         for r in results:
             v = r['verdict']
             if 'profile check skipped' in v:
