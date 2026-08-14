@@ -30,7 +30,9 @@ jobs:
           now = datetime.now(timezone.utc)
           season_start = now.year if now.month >= 8 else now.year - 1
           code = f"{str(season_start)[-2:]}{str(season_start+1)[-2:]}"
+          prev = f"{str(season_start-1)[-2:]}{str(season_start)[-2:]}"
           print(f"code={code}")
+          print(f"prev={prev}")
           EOF
 
       - name: Download latest league CSVs
@@ -49,43 +51,65 @@ jobs:
             [B1]=B1_raw.csv
           )
           mkdir -p /tmp/fsdl
+          PREV="${{ steps.season.outputs.prev }}"
+          echo "Current season: $SEASON   Fallback season: $PREV"
+          echo ""
+
+          # Returns 0 if $1 is a valid CSV for league code $2.
+          # Three ways a download can be structurally plausible but wrong:
+          #   - an HTML error page served with HTTP 200
+          #   - a CSV for a different league (the source mismaps codes early
+          #     in a season: on 2026-08-14 E0.csv served Championship data and
+          #     SP1.csv served Primeira Liga)
+          #   - too few lines to contain any matches
+          validate_file() {
+            local F="$1" CODE="$2"
+            [ -f "$F" ] || return 1
+            local LINES; LINES=$(wc -l < "$F")
+            [ "$LINES" -ge 2 ] || return 1
+            head -1 "$F" | grep -q "HomeTeam" || return 1
+            local DIV; DIV=$(awk -F, 'NR==2 {gsub(/"/,"",$1); print $1}' "$F")
+            [ "$DIV" = "$CODE" ] || return 1
+            return 0
+          }
+
           for CODE in "${!LEAGUES[@]}"; do
             FILE="${LEAGUES[$CODE]}"
-            URL="https://www.football-data.co.uk/mmz4281/${SEASON}/${CODE}.csv"
-            TMP="/tmp/fsdl/${CODE}.csv"
-            echo "Fetching $URL"
+            INSTALLED=0
 
-            # Download to a temp file first. `curl -o` truncates its target
-            # immediately, so writing straight to data/$FILE would destroy the
-            # existing good file the moment a request failed — the opposite of
-            # the "keeping previous file" behaviour intended here.
-            if curl -sL --fail "$URL" -o "$TMP"; then
-              LINES=$(wc -l < "$TMP")
-              # A valid file has a header plus at least one match, and the
-              # header must contain the columns we rely on.
-              if [ "$LINES" -ge 2 ] && head -1 "$TMP" | grep -q "HomeTeam"; then
+            for TRY_SEASON in "$SEASON" "$PREV"; do
+              URL="https://www.football-data.co.uk/mmz4281/${TRY_SEASON}/${CODE}.csv"
+              TMP="/tmp/fsdl/${CODE}_${TRY_SEASON}.csv"
 
-                # Identity check. football-data CSVs carry a `Div` column naming
-                # the league. On 2026-08-14 the site served La Liga content at
-                # the P1.csv path — byte-identical to SP1.csv. Without this
-                # check that silently becomes "Primeira Liga" data and corrupts
-                # every downstream analysis of that league.
-                ACTUAL_DIV=$(awk -F, 'NR==2 {gsub(/"/,"",$1); print $1}' "$TMP")
-                if [ -n "$ACTUAL_DIV" ] && [ "$ACTUAL_DIV" != "$CODE" ]; then
-                  echo "  REJECTED: $CODE — file contains Div='$ACTUAL_DIV', not '$CODE'."
-                  echo "            The source served the wrong league. Keeping existing data/$FILE."
-                  continue
+              if curl -sL --fail "$URL" -o "$TMP" 2>/dev/null; then
+                if validate_file "$TMP" "$CODE"; then
+                  mv "$TMP" "data/$FILE"
+                  MATCHES=$(( $(wc -l < "data/$FILE") - 1 ))
+                  if [ "$TRY_SEASON" = "$SEASON" ]; then
+                    echo "  OK: $CODE season $TRY_SEASON ($MATCHES matches)"
+                  else
+                    echo "  OK: $CODE season $TRY_SEASON ($MATCHES matches) <- FALLBACK,"
+                    echo "      current season $SEASON was unavailable or served the wrong league"
+                  fi
+                  INSTALLED=1
+                  break
+                else
+                  DIV=$(awk -F, 'NR==2 {gsub(/"/,"",$1); print $1}' "$TMP" 2>/dev/null | cut -c1-20)
+                  echo "  reject: $CODE season $TRY_SEASON (Div='$DIV')"
                 fi
-
-                mv "$TMP" "data/$FILE"
-                echo "  OK: $CODE -> data/$FILE ($((LINES-1)) matches, Div=$ACTUAL_DIV)"
               else
-                echo "  WARNING: $CODE returned $LINES line(s) or an unexpected header."
-                echo "           Keeping the existing data/$FILE unchanged."
-                head -1 "$TMP" | cut -c1-120
+                echo "  reject: $CODE season $TRY_SEASON (download failed)"
               fi
-            else
-              echo "  WARNING: download failed for $CODE. Keeping existing data/$FILE."
+            done
+
+            if [ "$INSTALLED" = "0" ]; then
+              # Nothing valid was downloadable. Is what we already have usable?
+              if validate_file "data/$FILE" "$CODE"; then
+                echo "  KEEP: $CODE — no valid download, existing file is sound"
+              else
+                echo "  *** BROKEN: $CODE — no valid download AND existing file is invalid."
+                echo "      data/$FILE holds wrong-league or non-CSV content and needs manual repair."
+              fi
             fi
           done
 
