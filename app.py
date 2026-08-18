@@ -13,6 +13,9 @@ import pandas as pd
 import os
 from datetime import datetime
 
+import api_data
+from footystats_client import FootyStatsError
+
 st.set_page_config(page_title="Betting System — Match Scorer", page_icon="⚽", layout="centered")
 
 LEAGUE_CONFIG = {
@@ -42,6 +45,31 @@ OUTLIER_FLAGS = [
 ]
 
 DATA_DIR = 'data'
+
+
+# ---------------------------------------------------------------------------
+# API-backed data, aggressively cached.
+#
+# Streamlit re-runs this whole script on every interaction, so uncached calls
+# would burn the 1800/hour budget within minutes. League subscriptions almost
+# never change (24h); results only change after a matchday (1h).
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def _client():
+    return api_data.get_client(streamlit_secrets=st.secrets)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_leagues():
+    return api_data.list_leagues(_client())
+
+
+@st.cache_data(ttl=3600, show_spinner="Fetching season data...")
+def cached_season(season_ids_tuple):
+    sid, frame, note = api_data.pick_season(_client(), list(season_ids_tuple))
+    return sid, frame, note
+
 
 
 @st.cache_data(ttl=3600)  # re-read files at most once an hour, so a data refresh gets picked up
@@ -121,19 +149,54 @@ st.title("⚽ Match Scorer")
 st.caption("Stage 1 of the pre-bet decision pipeline — Blueprint Section 16.2. "
            "This is NOT a betting recommendation — see the confidence notes on every score.")
 
-league = st.selectbox("League", list(LEAGUE_CONFIG.keys()))
-cfg = LEAGUE_CONFIG[league]
-data_path = os.path.join(DATA_DIR, cfg['file'])
+# ---------------------------------------------------------------------------
+# Data source: FootyStats API when available, bundled CSVs as a fallback.
+#
+# The API gives ~50 leagues with xG, versus 8 CSVs. It is also more reliable —
+# Section 27 found football-data.co.uk serving Championship data at the Premier
+# League URL and HTML error pages with HTTP 200.
+# ---------------------------------------------------------------------------
 
-if not os.path.exists(data_path):
-    st.error(f"Data file not found: {data_path}. Check the data/ folder is deployed alongside this app.")
-    st.stop()
+use_api = True
+try:
+    leagues = cached_leagues()
+    if not leagues:
+        use_api = False
+except (FootyStatsError, Exception) as e:
+    use_api = False
+    api_error = str(e)
 
-df = load_season_data(data_path, cfg['total_games'])
-st.caption(f"Data as of: **{df.Date.max().strftime('%Y-%m-%d')}** "
-           f"({len(df)} matches played so far this season)")
+if use_api:
+    labels = [lg['label'] for lg in leagues]
+    default = next((i for i, l in enumerate(labels) if 'La Liga' in l), 0)
+    picked = st.selectbox(f"League ({len(labels)} available via API)", labels, index=default)
+    lg = next(l for l in leagues if l['label'] == picked)
+    league = lg['name']
 
-team_list = sorted(set(df.HomeTeam) | set(df.AwayTeam))
+    try:
+        season_id, df, season_note = cached_season(tuple(lg['seasons']))
+    except FootyStatsError as e:
+        st.error(f"Could not load a usable season for {picked}: {e}")
+        st.info("Early in a season there may be too few completed matches to score with. "
+                "Try another league, or come back once a few gameweeks have been played.")
+        st.stop()
+
+    st.caption(f"**{picked}** — {season_note}. "
+               f"Latest match: {df.Date.max().strftime('%Y-%m-%d')}")
+    team_list = api_data.team_list(df)
+
+else:
+    st.warning("FootyStats API unavailable — using the bundled CSV files instead. "
+               "Only 8 leagues, and the data may be stale.")
+    league = st.selectbox("League", list(LEAGUE_CONFIG.keys()))
+    cfg = LEAGUE_CONFIG[league]
+    data_path = os.path.join(DATA_DIR, cfg['file'])
+    if not os.path.exists(data_path):
+        st.error(f"Data file not found: {data_path}.")
+        st.stop()
+    df = load_season_data(data_path, cfg['total_games'])
+    st.caption(f"Data as of: **{df.Date.max().strftime('%Y-%m-%d')}** ({len(df)} matches)")
+    team_list = sorted(set(df.HomeTeam) | set(df.AwayTeam))
 col1, col2 = st.columns(2)
 with col1:
     home_team = st.selectbox("Home team", team_list)
@@ -153,11 +216,15 @@ with col2:
 
 if st.button("Score this fixture", type="primary"):
     stats = compute_team_stats(df)
+    n_teams = len(team_list)
+    # Season length from squad size rather than a hardcoded table: the API
+    # covers ~50 leagues of varying sizes, so (teams-1)*2 is the general form.
+    total_games = max((n_teams - 1) * 2, 10) if n_teams else 38
     st.session_state['scored'] = {
         'league': league,
         'home_team': home_team,
         'away_team': away_team,
-        'result': score_fixture(home_team, away_team, stats, cfg['total_games']),
+        'result': score_fixture(home_team, away_team, stats, total_games),
         'flags': check_outlier_flags(league, home_team, away_team),
     }
 
@@ -194,6 +261,30 @@ if scored:
         st.write(f"**{away_team} (away) form:**")
         st.write(f"{result['away_form_ppg']:.2f} pts/game")
         st.write(f"Goal diff/game: {result['away_gd']:+.2f}")
+
+    # xG context, when the API provides it. Deliberately shown BELOW the score
+    # and labelled as descriptive: Sections 11l and 11o tested xG-based signals
+    # and neither survived out-of-sample validation, so including it in the
+    # composite would be adding an unvalidated input to a validated pipeline.
+    if use_api:
+        xg_h = api_data.xg_summary(df, home_team)
+        xg_a = api_data.xg_summary(df, away_team)
+        if xg_h and xg_a:
+            with st.expander("xG context (not part of the score)"):
+                st.caption("Descriptive only. Blueprint Sections 11l and 11o tested "
+                           "xG-based signals; neither survived validation, so xG is "
+                           "deliberately excluded from the composite.")
+                xc1, xc2 = st.columns(2)
+                with xc1:
+                    st.write(f"**{home_team}** ({xg_h['matches']} matches)")
+                    st.write(f"xG for: {xg_h['xg_for']:.2f}/game")
+                    st.write(f"xG against: {xg_h['xg_against']:.2f}/game")
+                    st.write(f"xG diff: {xg_h['xg_diff']:+.2f}/game")
+                with xc2:
+                    st.write(f"**{away_team}** ({xg_a['matches']} matches)")
+                    st.write(f"xG for: {xg_a['xg_for']:.2f}/game")
+                    st.write(f"xG against: {xg_a['xg_against']:.2f}/game")
+                    st.write(f"xG diff: {xg_a['xg_diff']:+.2f}/game")
 
     for flag in flags:
         st.warning(f"**OUTLIER FLAG: {flag['name']}**\n\n"
