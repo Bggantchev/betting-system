@@ -158,11 +158,18 @@ st.caption("Stage 1 of the pre-bet decision pipeline — Blueprint Section 16.2.
 # ---------------------------------------------------------------------------
 
 use_api = True
+api_error = None
 try:
     leagues = cached_leagues()
     if not leagues:
         use_api = False
-except (FootyStatsError, Exception) as e:
+        api_error = ("The API responded, but returned no leagues. Check that leagues "
+                     "are selected in your FootyStats account settings — the API only "
+                     "returns data for leagues you have chosen.")
+except Exception as e:
+    # Broad by design: a missing Streamlit secret raises
+    # StreamlitSecretNotFoundError, which is not a FootyStatsError. Section 26.2
+    # documents what happens when this catch is too narrow.
     use_api = False
     api_error = str(e)
 
@@ -186,8 +193,31 @@ if use_api:
     team_list = api_data.team_list(df)
 
 else:
-    st.warning("FootyStats API unavailable — using the bundled CSV files instead. "
-               "Only 8 leagues, and the data may be stale.")
+    st.warning("**FootyStats API unavailable** — falling back to the bundled CSV "
+               "files. Only 8 leagues, and the data may be stale.")
+    if api_error:
+        with st.expander("Why? (and how to fix it)", expanded=True):
+            st.code(api_error, language=None)
+            if 'No API key found' in api_error or 'secret' in api_error.lower():
+                st.markdown(
+                    "**Most likely cause:** the API key is not in this app's "
+                    "Streamlit secrets. The deployed app cannot read the local "
+                    "`footystats_key.txt` file.\n\n"
+                    "**Fix:** on share.streamlit.io, open this app's "
+                    "**Settings → Secrets** and add, on its own line:\n\n"
+                    "```toml\n"
+                    'FOOTYSTATS_KEY = "your_key_here"\n'
+                    "```\n\n"
+                    "Keep any existing `sheet_id` and `[gcp_service_account]` "
+                    "entries — add this alongside them, not instead of them. "
+                    "Note that `FOOTYSTATS_KEY` must sit **above** the "
+                    "`[gcp_service_account]` section: in TOML, a bare key placed "
+                    "after a section header is read as part of that section.")
+            elif 'Authentication failed' in api_error:
+                st.markdown("**Cause:** the key was rejected. Check it is correct "
+                            "and the subscription is active.")
+            else:
+                st.markdown("Fix the cause above, then use **Rerun** from the app menu.")
     league = st.selectbox("League", list(LEAGUE_CONFIG.keys()))
     cfg = LEAGUE_CONFIG[league]
     data_path = os.path.join(DATA_DIR, cfg['file'])
