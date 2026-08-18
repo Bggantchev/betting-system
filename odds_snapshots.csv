@@ -1,2 +1,5 @@
 snapshot_at_utc,match_id,league,kickoff_utc,minutes_to_kickoff,home_team,away_team,pin_home,pin_draw,pin_away,pin_overround_pct,pin_implied_home,pin_implied_draw,pin_implied_away,best_home_book,best_home_odds,soft_home,soft_draw,soft_away,qualifies_forward_test,books_quoted
 2026-08-18 14:38,8569284,,2026-08-18 15:30,51,OFK Pirin,Hebar 1918,3.060,3.100,2.100,12.56,0.2903,0.2866,0.4231,Interwetten,3.150,2.85,3.1,2.34,no,15
+2026-08-18 17:32,8641431,,2026-08-18 19:00,87,Fenerbahçe,Olympique Lyonnais,1.980,3.630,3.860,3.96,0.4858,0.2650,0.2492,Dafabet,2.090,2,3.6,3.48,no,19
+2026-08-18 17:32,8641432,,2026-08-18 19:00,87,Levski Sofia,AEK Athens,3.420,3.120,2.350,3.84,0.2816,0.3086,0.4098,1xbet,3.460,3.4,3,2.3,no,19
+2026-08-18 17:32,8641438,,2026-08-18 19:00,87,Dinamo Zagreb,Viking,1.640,4.160,5.070,4.74,0.5822,0.2295,0.1883,Sbo,1.740,1.67,3.9,4.65,no,19
