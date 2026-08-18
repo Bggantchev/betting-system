@@ -26,6 +26,7 @@ import json
 SHEET_TAB_NAME = 'Bets'
 FIELDNAMES = [
     'bet_id', 'logged_at', 'league', 'home_team', 'away_team',
+    'match_id',
     'side_bet', 'composite_score', 'side_favored_by_model',
     'outlier_flags', 'confidence_note',
     'stake', 'odds_at_bet', 'closing_odds', 'clv_pct',
